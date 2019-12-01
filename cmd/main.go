@@ -2,10 +2,12 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/aws/aws-sdk-go/service/route53/route53iface"
 
@@ -13,36 +15,25 @@ import (
 )
 
 func main() {
-	//region := ""
-	//start := time.Now()
-
 	// Define host port id outputfile flags
-	/*hostedZoneID := flag.String("hosted-zone-id", "localhost", "AWS Route 53 Hosted Zone ID.")
+	hostedZoneID := flag.String("hosted-zone-id", "localhost", "AWS Route 53 Hosted Zone ID.")
 	recordName := flag.String("record-name", "80", "DNS record name to upsert.")
-	ttl := flag.String("ttl", "300", "TTL of the DNS record.")
+	ttl := flag.Int64("ttl", 300, "TTL of the DNS record.")
+	region := flag.String("region", "us-east-1", "AWS region to use for Route 53.")
 
 	flag.Parse()
-	*/
 
 	// Initial credentials loaded from SDK's default credential chain. Such as
 	// the environment, shared credentials (~/.aws/credentials), or EC2 Instance
 	// Role.
-	/*
-		var sess *session.Session
-		if region == "" {
-			sess = session.Must(session.NewSessionWithOptions(session.Options{
-				SharedConfigState: session.SharedConfigEnable,
-			}))
-		} else {
-			sess = session.Must(session.NewSession(&aws.Config{
-				Region: aws.String(region)},
-			))
-		}
-		// Create a Route53 client from just a session.
-		r53 := route53.New(sess)
-	*/
+	var sess *session.Session
+	sess = session.Must(session.NewSession(&aws.Config{
+		Region: aws.String(*region)},
+	))
+	// Create a Route53 client from just a session.
+	r53 := route53.New(sess)
 
-	//oldIP := ""
+	oldIP := ""
 	// Create the default consensus,
 	// using the default configuration and no logger.
 	consensus := externalip.DefaultConsensus(nil, nil)
@@ -71,39 +62,32 @@ func main() {
 			}
 		}
 
-		if isIPv4 {
-			log.Println("detected IPv4 IP address")
+		if oldIP != publicIP.String() {
+			recordType := ""
+			if isIPv4 {
+				log.Println("detected IPv4 IP address")
+				recordType = "A"
+			} else {
+				log.Println("detected IPv6 IP address")
+				recordType = "AAAA"
+			}
+			log.Printf("Creating %s record type in hosted zone %s with name %s and IP %s\n", recordType, *hostedZoneID, *recordName, publicIPstr)
+			err = createRecord(r53, recordType, *hostedZoneID, *recordName, publicIPstr, *ttl)
+			if err != nil {
+				log.Println(err)
+				log.Printf("failed to update AWS Route 53. will retry in %d seconds\n", 300)
+				time.Sleep(time.Duration(300) * time.Second)
+				continue
+			}
+			log.Println("Route53 record updated")
+			oldIP = publicIP.String()
 		} else {
-			log.Println("detected IPv6 IP address")
+			log.Println("Public IP did not change. Nothing to do.")
 		}
-
-		/*
-				if oldIP != publicIP {
-					if isIPv4 {
-			        	log.Println("detected IPv4 IP address")
-			        	recordType := "A"
-			        } else {
-			        	log.Println("detected IPv6 IP address")
-			        	recordType := "AAAA"
-			        }
-					createRecord(r53, recordType, hostedZoneID, recordName, publicIPstr, ttl)
-					if err != nil {
-						log.Println("failed to update AWS Route 53. will retry in %d seconds", 300)
-						time.Sleep(300)
-						continue
-					}
-					log.Println("Route53 record updated")
-					oldIP = publicIP
-				} else {
-					log.Println("Public IP did not change. Nothing to do.")
-				}
-		*/
 
 		// TODO: Allow sleep duration to be configurable
 		time.Sleep(time.Duration(300) * time.Second)
 	}
-
-	//log.Printf("%.2fs elapsed\n", time.Since(start).Seconds())
 }
 
 // createRecord performs an UPSERT of a DNS record AWS Route 53
@@ -122,6 +106,7 @@ func createRecord(svc route53iface.Route53API, recordType, zoneID, name, target 
 							},
 						},
 						TTL:           aws.Int64(ttl),
+						Weight:        aws.Int64(100),
 						SetIdentifier: aws.String("Arbitrary Id describing this change set"),
 					},
 				},
@@ -130,10 +115,11 @@ func createRecord(svc route53iface.Route53API, recordType, zoneID, name, target 
 		},
 		HostedZoneId: aws.String(zoneID), // Required
 	}
-	_, err := svc.ChangeResourceRecordSets(params)
+	output, err := svc.ChangeResourceRecordSets(params)
 	if err != nil {
 		return err
 	}
 	// TODO: wait for Route53 DNS servers to become in sync: https://github.com/aws/aws-sdk-go/blob/v1.25.42/service/route53/api.go#L2489
+	log.Printf(output.String())
 	return nil
 }
